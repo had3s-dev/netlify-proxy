@@ -3,20 +3,20 @@ const fetch = require('node-fetch');
 // Configuration - Environment variables are set in Netlify dashboard
 const SERVICES = {
   radarr: {
-    baseUrl: process.env.RADARR_BASE_URL,
+    baseUrl: process.env.RADARR_URL,
     apiKey: process.env.RADARR_API_KEY 
   },
   sonarr: {
-    baseUrl: process.env.SONARR_BASE_URL,
+    baseUrl: process.env.SONARR_URL,
     apiKey: process.env.SONARR_API_KEY
   }
 };
 
 // Log environment setup
 console.log('Environment check:', {
-  radarrUrl: process.env.RADARR_BASE_URL ? 'Set' : 'Missing',
+  radarrUrl: process.env.RADARR_URL ? 'Set' : 'Missing',
   radarrKey: process.env.RADARR_API_KEY ? 'Set' : 'Missing',
-  sonarrUrl: process.env.SONARR_BASE_URL ? 'Set' : 'Missing', 
+  sonarrUrl: process.env.SONARR_URL ? 'Set' : 'Missing', 
   sonarrKey: process.env.SONARR_API_KEY ? 'Set' : 'Missing'
 });
 
