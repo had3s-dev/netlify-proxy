@@ -147,6 +147,9 @@ exports.handler = async (event, context) => {
     }
     
     console.log('Request options:', JSON.stringify(requestOptions, null, 2));
+    console.log('Final URL being called:', url);
+    console.log('Request body being sent:', requestOptions.body);
+    
     const response = await fetch(url, requestOptions);
 
     let responseData;
@@ -188,7 +191,10 @@ exports.handler = async (event, context) => {
       };
     }
     
-    logRequest(target, url, 'POST', response.status, responseData);
+    console.log('Response status:', response.status);
+    console.log('Response data:', JSON.stringify(responseData, null, 2));
+    
+    logRequest(target, url, method, response.status, responseData);
     
     return {
       statusCode: response.status,
