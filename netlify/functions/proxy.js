@@ -1,14 +1,15 @@
 const fetch = require('node-fetch');
+require('dotenv').config();
 
 // Configuration - Update these with your details
 const SERVICES = {
   radarr: {
-    baseUrl: 'http://radarr.finestanteater.box.ca:11842',
-    apiKey: 'd638be8e86c8402581b901bbbded9aab'
+    baseUrl: process.env.RADARR_BASE_URL,
+    apiKey: process.env.RADARR_API_KEY 
   },
   sonarr: {
-    baseUrl: 'http://sonarr.finestanteater.box.ca:59181',
-    apiKey: '9ff1be54efdf4f63a7e64bb7d800aef7'
+    baseUrl: process.env.SONARR_BASE_URL,
+    apiKey: process.env.SONARR_API_KEY
   }
 };
 
