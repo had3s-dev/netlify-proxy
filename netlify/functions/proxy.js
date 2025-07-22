@@ -33,7 +33,19 @@ const logRequest = (target, url, method, status, responseData) => {
 };
 
 exports.handler = async (event, context) => {
+  console.log('=== PROXY FUNCTION CALLED ===');
+  console.log('Event httpMethod:', event.httpMethod);
+  console.log('Event path:', event.path);
+  console.log('Event body:', event.body);
   console.log('Received event:', JSON.stringify(event, null, 2));
+  
+  // Log current environment variables
+  console.log('Current environment variables:', {
+    RADARR_URL: process.env.RADARR_URL ? 'Set' : 'Missing',
+    RADARR_API_KEY: process.env.RADARR_API_KEY ? 'Set' : 'Missing',
+    SONARR_URL: process.env.SONARR_URL ? 'Set' : 'Missing',
+    SONARR_API_KEY: process.env.SONARR_API_KEY ? 'Set' : 'Missing'
+  });
   
   // Only allow POST requests
   if (event.httpMethod !== 'POST') {
@@ -77,6 +89,36 @@ exports.handler = async (event, context) => {
     }
 
     const service = SERVICES[target];
+    
+    console.log('Service config for', target, ':', {
+      baseUrl: service.baseUrl,
+      hasApiKey: !!service.apiKey
+    });
+    
+    if (!service.baseUrl) {
+      const error = `Missing base URL for service ${target}. Check environment variables.`;
+      console.error(error);
+      return {
+        statusCode: 500,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          success: false,
+          error: error,
+          debug: {
+            target,
+            envVars: {
+              RADARR_URL: process.env.RADARR_URL ? 'Set' : 'Missing',
+              SONARR_URL: process.env.SONARR_URL ? 'Set' : 'Missing'
+            }
+          }
+        })
+      };
+    }
+    
     const url = new URL(path, service.baseUrl).toString();
     
     console.log(`Making ${method} ${target} request to:`, url);
