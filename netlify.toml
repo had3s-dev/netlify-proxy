@@ -1,6 +1,6 @@
 [build]
   functions = "netlify/functions"
-  command = "npm install node-fetch"
+  command = "npm install node-fetch dotenv"
 
 [[redirects]]
   from = "/api/*"
