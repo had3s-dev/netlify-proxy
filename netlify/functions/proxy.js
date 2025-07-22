@@ -1,7 +1,6 @@
 const fetch = require('node-fetch');
-require('dotenv').config();
 
-// Configuration - Update these with your details
+// Configuration - Environment variables are set in Netlify dashboard
 const SERVICES = {
   radarr: {
     baseUrl: process.env.RADARR_BASE_URL,
@@ -12,6 +11,14 @@ const SERVICES = {
     apiKey: process.env.SONARR_API_KEY
   }
 };
+
+// Log environment setup
+console.log('Environment check:', {
+  radarrUrl: process.env.RADARR_BASE_URL ? 'Set' : 'Missing',
+  radarrKey: process.env.RADARR_API_KEY ? 'Set' : 'Missing',
+  sonarrUrl: process.env.SONARR_BASE_URL ? 'Set' : 'Missing', 
+  sonarrKey: process.env.SONARR_API_KEY ? 'Set' : 'Missing'
+});
 
 // Helper function to log requests
 const logRequest = (target, url, method, status, responseData) => {
@@ -31,7 +38,12 @@ exports.handler = async (event, context) => {
   // Only allow POST requests
   if (event.httpMethod !== 'POST') {
     return { 
-      statusCode: 405, 
+      statusCode: 405,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({ 
         success: false,
         error: 'Method Not Allowed',
@@ -52,6 +64,11 @@ exports.handler = async (event, context) => {
       console.error(error);
       return {
         statusCode: 400,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({ 
           success: false,
           error: error
@@ -96,13 +113,35 @@ exports.handler = async (event, context) => {
     try {
       responseData = textResponse ? JSON.parse(textResponse) : null;
     } catch (e) {
-      console.error(`Failed to parse JSON response from ${target}:`, textResponse);
+      console.error(`Failed to parse JSON response from ${target}:`, textResponse.substring(0, 500));
+      
+      // Check if this is an HTML error page (like 404)
+      if (textResponse.includes('<!DOCTYPE html>')) {
+        console.error(`${target} API returned HTML error page, likely 404 or server error`);
+        return {
+          statusCode: 502,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type'
+          },
+          body: JSON.stringify({
+            success: false,
+            error: `Invalid JSON response`,
+            raw: textResponse.substring(0, 1000)
+          })
+        };
+      }
+      
       return {
         statusCode: 502,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type'
+        },
         body: JSON.stringify({
           success: false,
           error: `Invalid JSON response from ${target}`,
-          response: textResponse
+          raw: textResponse.substring(0, 500)
         })
       };
     }
@@ -111,6 +150,11 @@ exports.handler = async (event, context) => {
     
     return {
       statusCode: response.status,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
         success: response.ok,
         status: response.status,
@@ -123,6 +167,11 @@ exports.handler = async (event, context) => {
     console.error('Proxy error:', error);
     return {
       statusCode: 500,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
         success: false,
         error: error.message,
