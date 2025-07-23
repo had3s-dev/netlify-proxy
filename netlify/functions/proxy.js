@@ -4,6 +4,10 @@
  */
 
 exports.handler = async (event, context) => {
+    // Add comprehensive logging
+    console.log('[PROXY] Function invoked with method:', event.httpMethod);
+    console.log('[PROXY] Event body:', event.body);
+    
     // Only allow POST requests
     if (event.httpMethod !== 'POST') {
         return {
@@ -32,7 +36,16 @@ exports.handler = async (event, context) => {
     }
 
     try {
-        const { service, action, data } = JSON.parse(event.body);
+        // Parse request body with error handling
+        let parsedBody;
+        try {
+            parsedBody = JSON.parse(event.body);
+        } catch (parseError) {
+            console.error('[PROXY] JSON parse error:', parseError);
+            throw new Error(`Invalid JSON in request body: ${parseError.message}`);
+        }
+        
+        const { service, action, data } = parsedBody;
         
         console.log(`[PROXY] ${service}/${action} request:`, data);
 
@@ -86,13 +99,24 @@ async function handleRadarrRequest(action, data) {
     const baseUrl = process.env.RADARR_URL;
     const apiKey = process.env.RADARR_API_KEY;
     
+    console.log('[PROXY] Radarr environment check - URL exists:', !!baseUrl, 'API Key exists:', !!apiKey);
+    
     if (!baseUrl || !apiKey) {
-        throw new Error('Radarr configuration missing');
+        console.error('[PROXY] Missing Radarr config - URL:', baseUrl, 'API Key:', apiKey ? '[REDACTED]' : 'MISSING');
+        throw new Error('Radarr configuration missing: ' + (!baseUrl ? 'RADARR_URL' : '') + (!apiKey ? ' RADARR_API_KEY' : ''));
     }
 
     switch (action) {
         case 'add_movie':
-            return await addMovieToRadarr(baseUrl, apiKey, data);
+            console.log('[PROXY] Calling addMovieToRadarr with data:', data);
+            try {
+                const result = await addMovieToRadarr(baseUrl, apiKey, data);
+                console.log('[PROXY] addMovieToRadarr completed successfully');
+                return result;
+            } catch (error) {
+                console.error('[PROXY] addMovieToRadarr failed:', error);
+                throw error;
+            }
         case 'get_movies':
             return await getRadarrMovies(baseUrl, apiKey);
         case 'get_quality_profiles':
@@ -108,10 +132,16 @@ async function handleRadarrRequest(action, data) {
  * Add movie to Radarr using proper workflow
  */
 async function addMovieToRadarr(baseUrl, apiKey, data) {
+    console.log('[RADARR] addMovieToRadarr function called with:', data);
+    
     const { tmdbId, qualityProfileId, rootFolderPath, monitored = true, searchOnAdd = true } = data;
     
+    console.log('[RADARR] Extracted parameters - TMDB:', tmdbId, 'Quality:', qualityProfileId, 'Root:', rootFolderPath);
+    
     if (!tmdbId || !qualityProfileId || !rootFolderPath) {
-        throw new Error('Missing required fields: tmdbId, qualityProfileId, rootFolderPath');
+        const error = `Missing required fields - tmdbId: ${tmdbId}, qualityProfileId: ${qualityProfileId}, rootFolderPath: ${rootFolderPath}`;
+        console.error('[RADARR]', error);
+        throw new Error(error);
     }
 
     // Step 1: Lookup movie details from TMDB
