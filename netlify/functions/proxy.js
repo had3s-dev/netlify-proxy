@@ -336,6 +336,36 @@ async function addSeriesToSonarr(baseUrl, apiKey, data) {
         console.log('[SONARR] Sonarr returned single series object:', seriesTitle);
     }
     
+    // If searchOnAdd is true, trigger a search for the series
+    if (searchOnAdd && addedSeries.id) {
+        console.log(`[SONARR] Triggering search for series ID: ${addedSeries.id}`);
+        const searchUrl = `${baseUrl}/api/v3/command?apikey=${apiKey}`;
+        const searchPayload = {
+            name: 'SeriesSearch',
+            seriesId: addedSeries.id
+        };
+        
+        try {
+            const searchResponse = await fetch(searchUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(searchPayload)
+            });
+
+            if (!searchResponse.ok) {
+                console.error('[SONARR] Failed to trigger search:', await searchResponse.text());
+                throw new Error('Series was added, but search could not be triggered');
+            }
+            
+            console.log('[SONARR] Search triggered successfully');
+        } catch (searchError) {
+            console.error('[SONARR] Error triggering search:', searchError);
+            throw new Error(`Series was added, but search could not be triggered: ${searchError.message}`);
+        }
+    }
+    
     return {
         success: true,
         series: addedSeries,
