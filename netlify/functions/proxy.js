@@ -162,12 +162,19 @@ async function addMovieToRadarr(baseUrl, apiKey, data) {
     }
 
     const addedMovie = await addResponse.json();
-    console.log('[RADARR] Successfully added movie:', addedMovie.title);
+    
+    // Debug: Log the full response structure
+    console.log('[RADARR] Full response from Radarr:', JSON.stringify(addedMovie, null, 2));
+    
+    // Handle different response formats from Radarr
+    let movieTitle = addedMovie.title || addedMovie.originalTitle || 'Unknown Movie';
+    
+    console.log('[RADARR] Successfully added movie:', movieTitle);
     
     return {
         success: true,
         movie: addedMovie,
-        message: `Successfully added "${addedMovie.title}" to Radarr${searchOnAdd ? ' and triggered search' : ''}`
+        message: `Successfully added "${movieTitle}" to Radarr${searchOnAdd ? ' and triggered search' : ''}`
     };
 }
 
@@ -256,12 +263,19 @@ async function addSeriesToSonarr(baseUrl, apiKey, data) {
     }
 
     const addedSeries = await addResponse.json();
-    console.log('[SONARR] Successfully added series:', addedSeries.title);
+    
+    // Debug: Log the full response structure
+    console.log('[SONARR] Full response from Sonarr:', JSON.stringify(addedSeries, null, 2));
+    
+    // Handle different response formats from Sonarr
+    let seriesTitle = addedSeries.title || addedSeries.sortTitle || 'Unknown Series';
+    
+    console.log('[SONARR] Successfully added series:', seriesTitle);
     
     return {
         success: true,
         series: addedSeries,
-        message: `Successfully added "${addedSeries.title}" to Sonarr${searchOnAdd ? ' and triggered search' : ''}`
+        message: `Successfully added "${seriesTitle}" to Sonarr${searchOnAdd ? ' and triggered search' : ''}`
     };
 }
 
