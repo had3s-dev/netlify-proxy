@@ -161,15 +161,32 @@ async function addMovieToRadarr(baseUrl, apiKey, data) {
         throw new Error(`Failed to add movie: ${addResponse.status} ${addResponse.statusText} - ${errorText}`);
     }
 
-    const addedMovie = await addResponse.json();
+    const radarrResponse = await addResponse.json();
     
     // Debug: Log the full response structure
-    console.log('[RADARR] Full response from Radarr:', JSON.stringify(addedMovie, null, 2));
+    console.log('[RADARR] Full response from Radarr:', JSON.stringify(radarrResponse, null, 2));
     
-    // Handle different response formats from Radarr
-    let movieTitle = addedMovie.title || addedMovie.originalTitle || 'Unknown Movie';
+    let addedMovie;
+    let movieTitle;
     
-    console.log('[RADARR] Successfully added movie:', movieTitle);
+    // Handle Radarr's response - it often returns an array of all movies instead of just the added one
+    if (Array.isArray(radarrResponse)) {
+        console.log('[RADARR] Radarr returned array of movies, searching for TMDB ID:', tmdbId);
+        // Find the movie we just added by TMDB ID
+        addedMovie = radarrResponse.find(movie => movie.tmdbId === parseInt(tmdbId));
+        
+        if (!addedMovie) {
+            throw new Error(`Movie with TMDB ID ${tmdbId} was not found in Radarr library after addition attempt`);
+        }
+        
+        movieTitle = addedMovie.title || addedMovie.originalTitle || 'Unknown Movie';
+        console.log('[RADARR] Found added movie in response array:', movieTitle);
+    } else {
+        // Single movie object (ideal case)
+        addedMovie = radarrResponse;
+        movieTitle = addedMovie.title || addedMovie.originalTitle || 'Unknown Movie';
+        console.log('[RADARR] Radarr returned single movie object:', movieTitle);
+    }
     
     return {
         success: true,
@@ -262,15 +279,32 @@ async function addSeriesToSonarr(baseUrl, apiKey, data) {
         throw new Error(`Failed to add series: ${addResponse.status} ${addResponse.statusText} - ${errorText}`);
     }
 
-    const addedSeries = await addResponse.json();
+    const sonarrResponse = await addResponse.json();
     
     // Debug: Log the full response structure
-    console.log('[SONARR] Full response from Sonarr:', JSON.stringify(addedSeries, null, 2));
+    console.log('[SONARR] Full response from Sonarr:', JSON.stringify(sonarrResponse, null, 2));
     
-    // Handle different response formats from Sonarr
-    let seriesTitle = addedSeries.title || addedSeries.sortTitle || 'Unknown Series';
+    let addedSeries;
+    let seriesTitle;
     
-    console.log('[SONARR] Successfully added series:', seriesTitle);
+    // Handle Sonarr's response - it might return an array of all series instead of just the added one
+    if (Array.isArray(sonarrResponse)) {
+        console.log('[SONARR] Sonarr returned array of series, searching for TVDB ID:', tvdbId);
+        // Find the series we just added by TVDB ID
+        addedSeries = sonarrResponse.find(series => series.tvdbId === parseInt(tvdbId));
+        
+        if (!addedSeries) {
+            throw new Error(`Series with TVDB ID ${tvdbId} was not found in Sonarr library after addition attempt`);
+        }
+        
+        seriesTitle = addedSeries.title || addedSeries.sortTitle || 'Unknown Series';
+        console.log('[SONARR] Found added series in response array:', seriesTitle);
+    } else {
+        // Single series object (ideal case)
+        addedSeries = sonarrResponse;
+        seriesTitle = addedSeries.title || addedSeries.sortTitle || 'Unknown Series';
+        console.log('[SONARR] Sonarr returned single series object:', seriesTitle);
+    }
     
     return {
         success: true,
