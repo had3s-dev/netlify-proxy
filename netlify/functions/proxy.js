@@ -277,7 +277,7 @@ async function addSeriesToSonarr(baseUrl, apiKey, data) {
     const seriesDetails = lookupResults[0]; // Take first match
     console.log(`[SONARR] Found series: ${seriesDetails.title} (${seriesDetails.year})`);
 
-    // Step 2: Add series to Sonarr
+    // Step 2: Prepare series payload with proper monitoring settings
     const addPayload = {
         title: seriesDetails.title,
         titleSlug: seriesDetails.titleSlug,
@@ -288,10 +288,36 @@ async function addSeriesToSonarr(baseUrl, apiKey, data) {
         rootFolderPath: rootFolderPath,
         monitored: monitored,
         seasonFolder: true,
+        // Use provided seasons array if available, otherwise default to all seasons
+        seasons: data.seasons && data.seasons.length > 0 
+            ? seriesDetails.seasons.map(season => ({
+                seasonNumber: season.seasonNumber,
+                // Only monitor if it's in the selected seasons array
+                monitored: data.seasons.some(s => 
+                    parseInt(s.seasonNumber) === season.seasonNumber && 
+                    s.monitored !== false
+                )
+            }))
+            : seriesDetails.seasons?.map(season => ({
+                seasonNumber: season.seasonNumber,
+                monitored: season.seasonNumber > 0 // Default to monitoring all non-special seasons
+            })) || [],
         addOptions: {
-            searchForMissingEpisodes: searchOnAdd
-        }
+            searchForMissingEpisodes: searchOnAdd,
+            searchForCutoffUnmetEpisodes: searchOnAdd,
+            monitor: 'all',
+            ignoreEpisodesWithFiles: false,
+            ignoreEpisodesWithoutFiles: false
+        },
+        seriesType: seriesDetails.seriesType || 'standard',
+        seasonCount: seriesDetails.seasonCount || 1,
+        monitored: true,
+        useSceneNumbering: false
     };
+    
+    console.log('[SONARR] Seasons monitoring configuration:', 
+        addPayload.seasons.map(s => `S${s.seasonNumber}: ${s.monitored ? 'monitored' : 'not monitored'}`).join(', ')
+    );
 
     console.log('[SONARR] Adding series with payload:', JSON.stringify(addPayload, null, 2));
 
