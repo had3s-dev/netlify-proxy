@@ -508,6 +508,30 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         }
     }
 
+    // Additional author resolution via author lookup when author still missing
+    if (!book.author) {
+        try {
+            const candidates = extractAuthorNameCandidates(book, term);
+            for (const cand of candidates) {
+                const url = `${baseUrl}/api/v1/author/lookup?apikey=${apiKey}&term=${encodeURIComponent(cand)}`;
+                console.log('[READARR] Attempting author lookup with name:', cand);
+                const r = await fetch(url);
+                if (!r.ok) continue;
+                const arr = await r.json();
+                if (Array.isArray(arr) && arr.length > 0) {
+                    const best = pickBestAuthorMatch(arr, cand);
+                    if (best) {
+                        book.author = best;
+                        console.log('[READARR] Author resolved:', best?.authorName || best?.name || cand);
+                        break;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[READARR] Author lookup fallback failed:', e?.message || e);
+        }
+    }
+
     // Ensure default profiles when not provided
     let qpId = qualityProfileId;
     let mpId = metadataProfileId;
@@ -711,6 +735,80 @@ async function lookupReadarrAuthor(baseUrl, apiKey, data) {
     const response = await fetch(`${baseUrl}/api/v1/author/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
     if (!response.ok) throw new Error(`Failed to lookup author: ${response.statusText}`);
     return await response.json();
+}
+
+// ---- Helper functions for author resolution ----
+function extractAuthorNameCandidates(book, term) {
+    const names = new Set();
+    const title = (book?.title || '').toString();
+    // From authorTitle, which may contain title suffixes
+    if (book?.authorTitle) {
+        const raw = cleanupAuthorName(book.authorTitle, title);
+        if (raw) names.add(raw);
+        // Handle comma form: "last, first"
+        if (/,/.test(book.authorTitle)) {
+            const parts = book.authorTitle.split(',').map(s => s.trim());
+            if (parts.length >= 2) {
+                const flipped = cleanupAuthorName(`${parts[1]} ${parts[0]}`, title);
+                if (flipped) names.add(flipped);
+            }
+        }
+    }
+    // From title patterns like "... by Author ..."
+    if (title) {
+        const m = title.match(/\bby\s+([^()]+?)(?:\s*\(|$)/i);
+        if (m && m[1]) {
+            const n = cleanupAuthorName(m[1], title);
+            if (n) names.add(n);
+        }
+    }
+    // From incoming term if it includes "by"
+    if (typeof term === 'string' && /\bby\b/i.test(term)) {
+        const m2 = term.match(/\bby\s+([^()]+?)(?:\s*\(|$)/i);
+        if (m2 && m2[1]) {
+            const n2 = cleanupAuthorName(m2[1], title);
+            if (n2) names.add(n2);
+        }
+    }
+    // Filter out obviously wrong tokens
+    return Array.from(names).filter(n => n && n.length >= 3);
+}
+
+function cleanupAuthorName(name, bookTitle) {
+    if (!name) return '';
+    let s = String(name);
+    if (bookTitle) {
+        try {
+            const re = new RegExp(bookTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+            s = s.replace(re, ' ');
+        } catch {}
+    }
+    s = s.replace(/\bby\b/gi, ' ')
+         .replace(/#[0-9]+.*/g, ' ')
+         .replace(/\([^)]*\)/g, ' ')
+         .replace(/[“”"']/g, ' ')
+         .replace(/\s{2,}/g, ' ')
+         .trim();
+    // If comma form remains, flip it
+    if (/,/.test(s)) {
+        const parts = s.split(',').map(x => x.trim()).filter(Boolean);
+        if (parts.length >= 2) s = `${parts[1]} ${parts[0]}`.trim();
+    }
+    return s;
+}
+
+function pickBestAuthorMatch(results, candidate) {
+    const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const cand = norm(candidate);
+    let best = null;
+    for (const r of results) {
+        const nm = r?.authorName || r?.name || '';
+        const n = norm(nm);
+        if (!n) continue;
+        if (n === cand) return r;
+        if (!best && (n.includes(cand) || cand.includes(n))) best = r;
+    }
+    return best || (Array.isArray(results) ? results[0] : null);
 }
 
 async function getReadarrQualityProfiles(baseUrl, apiKey) {
