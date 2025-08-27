@@ -1,3 +1,6 @@
+const dotenv = require('dotenv');
+dotenv.config();
+
 /**
  * Netlify Function Proxy for Radarr/Sonarr APIs
  * Simplified, clean implementation following official API patterns
@@ -560,17 +563,39 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         throw new Error('No root folder path provided and no defaults available from Readarr');
     }
 
-    book.author.rootFolderPath = rootFolderPath;
-    book.author.metadataProfileId = parseInt(mpId);
-    book.author.qualityProfileId = parseInt(qpId);
-    book.author.addOptions = {
-        monitor: authorMonitor,
-        searchForMissingBooks: !!authorSearchForMissingBooks
-    };
-    book.author.manualAdd = true;
-
-    book.monitored = !!monitored;
-    book.addOptions = { searchForNewBook: !!searchForNewBook };
+    // Build minimal add payload rather than posting the full lookup object
+    let foreignAuthorId =
+        book.author?.foreignAuthorId ||
+        book.author?.foreignId ||
+        book.author?.foreign_id || // defensive
+        null;
+    // If missing, attempt to resolve via author lookup by name/title
+    if (!foreignAuthorId) {
+        const candidateNames = [];
+        if (book.author?.authorName) candidateNames.push(book.author.authorName);
+        if (book.author?.name) candidateNames.push(book.author.name);
+        if (book.authorTitle) candidateNames.push(book.authorTitle);
+        for (const cand of candidateNames) {
+            try {
+                const url = `${baseUrl}/api/v1/author/lookup?apikey=${apiKey}&term=${encodeURIComponent(cand)}`;
+                console.log('[READARR] Resolving foreignAuthorId via author lookup:', cand);
+                const r = await fetch(url);
+                if (!r.ok) continue;
+                const arr = await r.json();
+                const best = Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+                if (best?.foreignAuthorId) {
+                    foreignAuthorId = best.foreignAuthorId;
+                    console.log('[READARR] Found foreignAuthorId from lookup for', cand, '->', foreignAuthorId);
+                    break;
+                }
+            } catch (e) {
+                console.warn('[READARR] Author lookup for foreignAuthorId failed:', e?.message || e);
+            }
+        }
+    }
+    if (!foreignAuthorId) {
+        throw new Error('Readarr add requires author.foreignAuthorId; author lookup did not provide it');
+    }
 
     // Normalize author name for logging / compatibility
     if (book.author && !book.author.name && book.author.authorName) {
@@ -611,25 +636,56 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         book.editions = [];
     }
 
+    // Transform editions to AddBookEdition model and require a foreignEditionId
+    const editionsPayload = (book.editions || [])
+        .map(e => ({
+            title: e.title || '',
+            titleSlug: e.titleSlug || '',
+            images: Array.isArray(e.images) ? e.images : [],
+            foreignEditionId: e.foreignEditionId || e.foreignId || e.foreign_id || '',
+            monitored: true,
+            manualAdd: true
+        }))
+        .filter(e => !!e.foreignEditionId);
+    if (editionsPayload.length === 0) {
+        throw new Error('No valid editions found with a foreignEditionId (Goodreads edition ID) for Readarr add');
+    }
+
+    const addPayload = {
+        monitored: !!monitored,
+        addOptions: { searchForNewBook: !!searchForNewBook },
+        author: {
+            monitored: !!monitored,
+            qualityProfileId: parseInt(qpId),
+            metadataProfileId: parseInt(mpId),
+            foreignAuthorId: String(foreignAuthorId),
+            rootFolderPath
+        },
+        editions: editionsPayload
+    };
+    if (book.foreignBookId) {
+        addPayload.foreignBookId = String(book.foreignBookId);
+    }
+
     console.log('[READARR] Adding book with payload (trimmed):', JSON.stringify({
         title: book.title,
+        foreignBookId: addPayload.foreignBookId,
         author: {
-            name: book.author?.name,
-            qualityProfileId: book.author?.qualityProfileId,
-            metadataProfileId: book.author?.metadataProfileId,
-            rootFolderPath: book.author?.rootFolderPath,
-            addOptions: book.author?.addOptions,
-            manualAdd: book.author?.manualAdd
+            foreignAuthorId: addPayload.author.foreignAuthorId,
+            qualityProfileId: addPayload.author.qualityProfileId,
+            metadataProfileId: addPayload.author.metadataProfileId,
+            rootFolderPath: addPayload.author.rootFolderPath
         },
-        monitored: book.monitored,
-        addOptions: book.addOptions
+        editionsCount: addPayload.editions.length,
+        monitored: addPayload.monitored,
+        addOptions: addPayload.addOptions
     }, null, 2));
 
     const addUrl = `${baseUrl}/api/v1/book?apikey=${apiKey}`;
     const addResponse = await fetch(addUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(book)
+        body: JSON.stringify(addPayload)
     });
 
     if (!addResponse.ok) {
