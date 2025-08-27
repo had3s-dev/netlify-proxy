@@ -57,3 +57,13 @@ Thumbs.db
 
 # Netlify
 .netlify/
+test-proxy-function.html
+raw_movie_test.php.txt
+radarr.txt
+radarr.debug.txt
+NEW-PROXY-SYSTEM.md
+netlify-log.txt
+iss.txt
+error_log.txt
+debug_radarr.php
+check_radarr_config.php
