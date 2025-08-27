@@ -426,6 +426,10 @@ async function handleReadarrRequest(action, data) {
             return await addAuthorToReadarr(baseUrl, apiKey, data);
         case 'lookup_book':
             return await lookupReadarrBook(baseUrl, apiKey, data);
+        case 'lookup_book_bookinfo':
+            return await lookupBookInfoProBook(data.term || data.search);
+        case 'lookup_author_bookinfo':
+            return await lookupBookInfoProAuthor(data.term || data.search);
         case 'lookup_author':
             return await lookupReadarrAuthor(baseUrl, apiKey, data);
         case 'lookup_edition':
@@ -465,24 +469,28 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
 
     console.log('[READARR] addBookToReadarr called with:', data);
 
-    // Step 1: Resolve book object either from provided payload or lookup via term
-    let book = incomingBook;
-    if (!book) {
-        if (!term) {
-            throw new Error('Missing required field: term (e.g., "isbn:067003469X", "goodreads:656", author/title search)');
+    // Step 1: Lookup author
+    console.log(`[READARR] Looking up author: ${term}`);
+    let lookup = await lookupReadarrAuthor(baseUrl, apiKey, { term });
+    console.log(`[READARR] Readarr author lookup returned ${lookup?.length || 0} results`);
+    
+    // Fallback to BookInfo.pro if Readarr lookup fails
+    if (!lookup || lookup.length === 0) {
+        console.log(`[READARR] Falling back to BookInfo.pro author lookup: ${term}`);
+        try {
+            lookup = await lookupBookInfoProAuthor(term);
+            console.log(`[READARR] BookInfo.pro author lookup returned ${lookup?.length || 0} results`);
+        } catch (error) {
+            console.log(`[READARR] BookInfo.pro author lookup failed: ${error.message}`);
         }
-        const lookupUrl = `${baseUrl}/api/v1/book/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`;
-        console.log('[READARR] Looking up book with term:', term, '->', lookupUrl);
-        const lookupResponse = await fetch(lookupUrl);
-        if (!lookupResponse.ok) {
-            throw new Error(`Book lookup failed: ${lookupResponse.status} ${lookupResponse.statusText}`);
-        }
-        const lookupResults = await lookupResponse.json();
-        if (!Array.isArray(lookupResults) || lookupResults.length === 0) {
-            throw new Error(`No book results for term: ${term}`);
-        }
-        book = lookupResults[0];
     }
+    
+    if (!lookup || lookup.length === 0) {
+        throw new Error(`Author lookup failed for term: ${term}`);
+    }
+    
+    const authorData = lookup[0];
+
     console.log('[READARR] Using book result:', book?.title || '[no title]', 'by', book?.author?.name || '[unknown author]');
 
     // Fallback: if provided/selected book lacks author, try to resolve via identifiers or search
@@ -1027,6 +1035,72 @@ async function lookupReadarrEdition(baseUrl, apiKey, data) {
     const response = await fetch(`${baseUrl}/api/v1/edition/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
     if (!response.ok) throw new Error(`Failed to lookup edition: ${response.statusText}`);
     return await response.json();
+}
+
+// ---- BookInfo.pro API Integration ----
+async function lookupBookInfoProBook(term) {
+    try {
+        const response = await fetch(`https://api.bookinfo.pro/book?search=${encodeURIComponent(term)}`);
+        if (!response.ok) throw new Error(`BookInfo.pro API error: ${response.statusText}`);
+        
+        const data = await response.json();
+        if (!data || !data.results || data.results.length === 0) {
+            throw new Error('No results found in BookInfo.pro');
+        }
+        
+        // Transform BookInfo.pro format to Readarr format
+        return data.results.map(book => ({
+            title: book.title,
+            author: {
+                name: book.author
+            },
+            foreignBookId: book.id,
+            overview: book.description,
+            releaseDate: book.published_date,
+            isbn13: book.isbn13,
+            isbn10: book.isbn10,
+            genres: book.genres || [],
+            pages: book.page_count,
+            publisher: book.publisher,
+            language: book.language,
+            cover: book.cover_url,
+            ratings: {
+                value: book.rating || 0,
+                votes: book.rating_count || 0
+            }
+        }));
+    } catch (error) {
+        console.error('[BookInfo.pro] Error:', error);
+        throw error;
+    }
+}
+
+async function lookupBookInfoProAuthor(term) {
+    try {
+        const response = await fetch(`https://api.bookinfo.pro/author?search=${encodeURIComponent(term)}`);
+        if (!response.ok) throw new Error(`BookInfo.pro API error: ${response.statusText}`);
+        
+        const data = await response.json();
+        if (!data || !data.results || data.results.length === 0) {
+            throw new Error('No results found in BookInfo.pro');
+        }
+        
+        // Transform BookInfo.pro format to Readarr format
+        return data.results.map(author => ({
+            authorName: author.name,
+            foreignAuthorId: author.id,
+            overview: author.biography,
+            images: author.image_url ? [{ coverType: 'cover', url: author.image_url }] : [],
+            genres: author.genres || [],
+            ratings: {
+                value: author.rating || 0,
+                votes: author.rating_count || 0
+            }
+        }));
+    } catch (error) {
+        console.error('[BookInfo.pro] Error:', error);
+        throw error;
+    }
 }
 
 // ---- Helper functions for author resolution ----
