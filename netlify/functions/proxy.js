@@ -57,6 +57,9 @@ exports.handler = async (event, context) => {
             case 'sonarr':
                 result = await handleSonarrRequest(action, data);
                 break;
+            case 'readarr':
+                result = await handleReadarrRequest(action, data);
+                break;
             case 'overseerr':
                 result = await handleOverseerrRequest(action, data);
                 break;
@@ -397,6 +400,305 @@ async function addSeriesToSonarr(baseUrl, apiKey, data) {
         series: addedSeries,
         message: `Successfully added "${seriesTitle}" to Sonarr${searchOnAdd ? ' and triggered search' : ''}`
     };
+}
+
+/**
+ * Handle Readarr API requests
+ */
+async function handleReadarrRequest(action, data) {
+    const baseUrl = process.env.READARR_URL;
+    const apiKey = process.env.READARR_API_KEY;
+
+    console.log('[PROXY] Readarr environment check - URL exists:', !!baseUrl, 'API Key exists:', !!apiKey);
+
+    if (!baseUrl || !apiKey) {
+        console.error('[PROXY] Missing Readarr config - URL:', baseUrl, 'API Key:', apiKey ? '[REDACTED]' : 'MISSING');
+        throw new Error('Readarr configuration missing: ' + (!baseUrl ? 'READARR_URL' : '') + (!apiKey ? ' READARR_API_KEY' : ''));
+    }
+
+    switch (action) {
+        case 'add_book':
+            return await addBookToReadarr(baseUrl, apiKey, data);
+        case 'add_author':
+            return await addAuthorToReadarr(baseUrl, apiKey, data);
+        case 'lookup_book':
+            return await lookupReadarrBook(baseUrl, apiKey, data);
+        case 'lookup_author':
+            return await lookupReadarrAuthor(baseUrl, apiKey, data);
+        case 'get_books':
+            return await getReadarrBooks(baseUrl, apiKey);
+        case 'get_authors':
+            return await getReadarrAuthors(baseUrl, apiKey);
+        case 'get_quality_profiles':
+            return await getReadarrQualityProfiles(baseUrl, apiKey);
+        case 'get_metadata_profiles':
+            return await getReadarrMetadataProfiles(baseUrl, apiKey);
+        case 'get_root_folders':
+            return await getReadarrRootFolders(baseUrl, apiKey);
+        default:
+            throw new Error(`Unknown Readarr action: ${action}`);
+    }
+}
+
+/**
+ * Add book to Readarr using lookup workflow
+ */
+async function addBookToReadarr(baseUrl, apiKey, data) {
+    const {
+        term,
+        book: incomingBook,
+        qualityProfileId,
+        metadataProfileId,
+        rootFolderPath: inputRoot,
+        monitored = true,
+        searchForNewBook = true,
+        authorMonitor = 'all',
+        authorSearchForMissingBooks = false
+    } = data || {};
+
+    console.log('[READARR] addBookToReadarr called with:', data);
+
+    // Step 1: Resolve book object either from provided payload or lookup via term
+    let book = incomingBook;
+    if (!book) {
+        if (!term) {
+            throw new Error('Missing required field: term (e.g., "isbn:067003469X", "goodreads:656", author/title search)');
+        }
+        const lookupUrl = `${baseUrl}/api/v1/book/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`;
+        console.log('[READARR] Looking up book with term:', term, '->', lookupUrl);
+        const lookupResponse = await fetch(lookupUrl);
+        if (!lookupResponse.ok) {
+            throw new Error(`Book lookup failed: ${lookupResponse.status} ${lookupResponse.statusText}`);
+        }
+        const lookupResults = await lookupResponse.json();
+        if (!Array.isArray(lookupResults) || lookupResults.length === 0) {
+            throw new Error(`No book results for term: ${term}`);
+        }
+        book = lookupResults[0];
+    }
+    console.log('[READARR] Using book result:', book?.title || '[no title]', 'by', book?.author?.name || '[unknown author]');
+
+    // Ensure default profiles when not provided
+    let qpId = qualityProfileId;
+    let mpId = metadataProfileId;
+    if (!qpId || !mpId) {
+        const { qualityProfileId: defQpId, metadataProfileId: defMpId } = await getReadarrDefaultProfileIds(baseUrl, apiKey);
+        qpId = qpId || defQpId;
+        mpId = mpId || defMpId;
+    }
+
+    // Construct payload per Readarr expectations
+    if (!book.author) {
+        throw new Error('Lookup did not return author information required by Readarr');
+    }
+
+    // Determine root folder path
+    let rootFolderPath = inputRoot;
+    if (!rootFolderPath) {
+        try {
+            const roots = await getReadarrRootFolders(baseUrl, apiKey);
+            rootFolderPath = (Array.isArray(roots) && roots.length > 0) ? (roots[0].path || roots[0].Path || roots[0].name) : undefined;
+        } catch (e) {
+            console.warn('[READARR] Failed to fetch root folders for defaulting:', e?.message || e);
+        }
+    }
+    if (!rootFolderPath) {
+        throw new Error('No root folder path provided and no defaults available from Readarr');
+    }
+
+    book.author.rootFolderPath = rootFolderPath;
+    book.author.metadataProfileId = parseInt(mpId);
+    book.author.qualityProfileId = parseInt(qpId);
+    book.author.addOptions = {
+        monitor: authorMonitor,
+        searchForMissingBooks: !!authorSearchForMissingBooks
+    };
+    book.author.manualAdd = true;
+
+    book.monitored = !!monitored;
+    book.addOptions = { searchForNewBook: !!searchForNewBook };
+
+    console.log('[READARR] Adding book with payload (trimmed):', JSON.stringify({
+        title: book.title,
+        author: {
+            name: book.author?.name,
+            qualityProfileId: book.author?.qualityProfileId,
+            metadataProfileId: book.author?.metadataProfileId,
+            rootFolderPath: book.author?.rootFolderPath,
+            addOptions: book.author?.addOptions,
+            manualAdd: book.author?.manualAdd
+        },
+        monitored: book.monitored,
+        addOptions: book.addOptions
+    }, null, 2));
+
+    const addUrl = `${baseUrl}/api/v1/book?apikey=${apiKey}`;
+    const addResponse = await fetch(addUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(book)
+    });
+
+    if (!addResponse.ok) {
+        const errorText = await addResponse.text();
+        throw new Error(`Failed to add book: ${addResponse.status} ${addResponse.statusText} - ${errorText}`);
+    }
+
+    const addResult = await addResponse.json();
+    console.log('[READARR] Add book response:', JSON.stringify(addResult, null, 2));
+
+    return {
+        success: true,
+        book: addResult,
+        message: `Successfully added book "${book.title}" to Readarr${searchForNewBook ? ' and triggered search' : ''}`
+    };
+}
+
+/**
+ * Add author to Readarr
+ */
+async function addAuthorToReadarr(baseUrl, apiKey, data) {
+    const {
+        term,
+        qualityProfileId,
+        metadataProfileId,
+        rootFolderPath,
+        monitored = true,
+        authorMonitor = 'none',
+        authorSearchForMissingBooks = false
+    } = data || {};
+
+    console.log('[READARR] addAuthorToReadarr called with:', data);
+
+    if (!term) {
+        throw new Error('Missing required field: term (author search term)');
+    }
+    if (!rootFolderPath) {
+        throw new Error('Missing required field: rootFolderPath');
+    }
+
+    const lookupUrl = `${baseUrl}/api/v1/author/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`;
+    console.log('[READARR] Looking up author with term:', term);
+    const lookupResponse = await fetch(lookupUrl);
+    if (!lookupResponse.ok) {
+        throw new Error(`Author lookup failed: ${lookupResponse.status} ${lookupResponse.statusText}`);
+    }
+    const lookupResults = await lookupResponse.json();
+    if (!Array.isArray(lookupResults) || lookupResults.length === 0) {
+        throw new Error(`No author results for term: ${term}`);
+    }
+
+    const author = lookupResults[0];
+    console.log('[READARR] Using author result:', author?.authorName || author?.name || '[no name]');
+
+    // Ensure default profiles when not provided
+    let qpId = qualityProfileId;
+    let mpId = metadataProfileId;
+    if (!qpId || !mpId) {
+        const { qualityProfileId: defQpId, metadataProfileId: defMpId } = await getReadarrDefaultProfileIds(baseUrl, apiKey);
+        qpId = qpId || defQpId;
+        mpId = mpId || defMpId;
+    }
+
+    author.metadataProfileId = parseInt(mpId);
+    author.qualityProfileId = parseInt(qpId);
+    author.rootFolderPath = rootFolderPath;
+    author.addOptions = {
+        monitor: authorMonitor,
+        searchForMissingBooks: !!authorSearchForMissingBooks
+    };
+    author.monitored = !!monitored;
+
+    console.log('[READARR] Adding author with payload (trimmed):', JSON.stringify({
+        name: author?.authorName || author?.name,
+        qualityProfileId: author.qualityProfileId,
+        metadataProfileId: author.metadataProfileId,
+        rootFolderPath: author.rootFolderPath,
+        addOptions: author.addOptions,
+        monitored: author.monitored
+    }, null, 2));
+
+    const addUrl = `${baseUrl}/api/v1/author?apikey=${apiKey}`;
+    const addResponse = await fetch(addUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(author)
+    });
+
+    if (!addResponse.ok) {
+        const errorText = await addResponse.text();
+        throw new Error(`Failed to add author: ${addResponse.status} ${addResponse.statusText} - ${errorText}`);
+    }
+
+    const addResult = await addResponse.json();
+    console.log('[READARR] Add author response:', JSON.stringify(addResult, null, 2));
+
+    return {
+        success: true,
+        author: addResult,
+        message: `Successfully added author to Readarr`
+    };
+}
+
+// ---- Readarr helpers ----
+async function getReadarrDefaultProfileIds(baseUrl, apiKey) {
+    const [qps, mps] = await Promise.all([
+        getReadarrQualityProfiles(baseUrl, apiKey),
+        getReadarrMetadataProfiles(baseUrl, apiKey)
+    ]);
+    if (!Array.isArray(qps) || qps.length === 0) {
+        throw new Error('No Readarr quality profiles available');
+    }
+    if (!Array.isArray(mps) || mps.length === 0) {
+        throw new Error('No Readarr metadata profiles available');
+    }
+    return { qualityProfileId: qps[0].id, metadataProfileId: mps[0].id };
+}
+
+async function getReadarrBooks(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/book?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get books: ${response.statusText}`);
+    return await response.json();
+}
+
+async function getReadarrAuthors(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/author?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get authors: ${response.statusText}`);
+    return await response.json();
+}
+
+async function lookupReadarrBook(baseUrl, apiKey, data) {
+    const { term } = data || {};
+    if (!term) throw new Error('lookup_book requires "term"');
+    const response = await fetch(`${baseUrl}/api/v1/book/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
+    if (!response.ok) throw new Error(`Failed to lookup book: ${response.statusText}`);
+    return await response.json();
+}
+
+async function lookupReadarrAuthor(baseUrl, apiKey, data) {
+    const { term } = data || {};
+    if (!term) throw new Error('lookup_author requires "term"');
+    const response = await fetch(`${baseUrl}/api/v1/author/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
+    if (!response.ok) throw new Error(`Failed to lookup author: ${response.statusText}`);
+    return await response.json();
+}
+
+async function getReadarrQualityProfiles(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/qualityprofile?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get quality profiles: ${response.statusText}`);
+    return await response.json();
+}
+
+async function getReadarrMetadataProfiles(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/metadataprofile?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get metadata profiles: ${response.statusText}`);
+    return await response.json();
+}
+
+async function getReadarrRootFolders(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/rootfolder?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get root folders: ${response.statusText}`);
+    return await response.json();
 }
 
 /**
