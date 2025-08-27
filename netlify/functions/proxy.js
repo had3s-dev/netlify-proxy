@@ -841,13 +841,10 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
     const addPayload = {
         monitored: !!monitored,
         addOptions: { 
-            searchForNewBook: !!searchForNewBook,
-            // Ensure we only search for this specific book, not the entire author
-            searchForMissingBooks: false,
-            monitor: "none" // Don't auto-monitor author's other books
+            searchForNewBook: !!searchForNewBook // Only search for this specific book
         },
         author: {
-            monitored: !!monitored,
+            monitored: false, // Don't monitor author for automatic searches
             qualityProfileId: parseInt(qpId),
             metadataProfileId: parseInt(mpId),
             foreignAuthorId: String(foreignAuthorId),
