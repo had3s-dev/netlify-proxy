@@ -66,6 +66,9 @@ exports.handler = async (event, context) => {
             case 'overseerr':
                 result = await handleOverseerrRequest(action, data);
                 break;
+            case 'headphones':
+                result = await handleHeadphonesRequest(action, data);
+                break;
             default:
                 throw new Error(`Unknown service: ${service}`);
         }
@@ -447,6 +450,88 @@ async function handleReadarrRequest(action, data) {
         default:
             throw new Error(`Unknown Readarr action: ${action}`);
     }
+}
+
+/**
+ * Handle Headphones API requests
+ */
+async function handleHeadphonesRequest(action, data) {
+    const baseUrl = process.env.HEADPHONES_URL;
+    const apiKey = process.env.HEADPHONES_API_KEY;
+
+    console.log('[PROXY] Headphones environment check - URL exists:', !!baseUrl, 'API Key exists:', !!apiKey);
+
+    if (!baseUrl || !apiKey) {
+        console.error('[PROXY] Missing Headphones config - URL:', baseUrl, 'API Key:', apiKey ? '[REDACTED]' : 'MISSING');
+        throw new Error('Headphones configuration missing: ' + (!baseUrl ? 'HEADPHONES_URL' : '') + (!apiKey ? ' HEADPHONES_API_KEY' : ''));
+    }
+
+    switch (action) {
+        case 'search_artist':
+            return await searchHeadphonesArtist(baseUrl, apiKey, data);
+        case 'add_artist':
+            return await addHeadphonesArtist(baseUrl, apiKey, data);
+        case 'get_quality_profiles':
+            return await getHeadphonesQualityProfiles(baseUrl, apiKey);
+        case 'get_root_folders':
+            return await getHeadphonesRootFolders(baseUrl, apiKey);
+        case 'get_metadata_profiles':
+            // Not typically applicable for Headphones; return empty array for compatibility
+            return [];
+        default:
+            throw new Error(`Unknown Headphones action: ${action}`);
+    }
+}
+
+// Headphones helpers
+async function searchHeadphonesArtist(baseUrl, apiKey, data) {
+    const term = data?.term || data?.name || data?.query;
+    if (!term) throw new Error('Search term is required');
+
+    const url = `${baseUrl.replace(/\/$/, '')}/api?apikey=${encodeURIComponent(apiKey)}&cmd=findArtist&name=${encodeURIComponent(term)}`;
+    console.log('[HEADPHONES] Searching artists:', term);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Headphones findArtist failed: ${res.status} ${res.statusText}`);
+    const json = await res.json();
+    // Some Headphones builds return object with 'artists' or direct array; normalize to array
+    const list = Array.isArray(json) ? json : (json?.artists || json?.results || []);
+    return list;
+}
+
+async function addHeadphonesArtist(baseUrl, apiKey, data) {
+    const mbid = data?.mbid || data?.mbId || data?.id || data?.foreignArtistId;
+    const name = data?.artistName || data?.name;
+    if (!mbid) throw new Error('MBID is required to add artist');
+
+    const url = `${baseUrl.replace(/\/$/, '')}/api?apikey=${encodeURIComponent(apiKey)}&cmd=addArtist&id=${encodeURIComponent(mbid)}`;
+    console.log('[HEADPHONES] Adding artist MBID:', mbid, 'Name:', name || '[unknown]');
+    const res = await fetch(url);
+    if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Headphones addArtist failed: ${res.status} ${res.statusText} - ${txt}`);
+    }
+    const json = await res.json().catch(() => ({}));
+    return {
+        success: true,
+        artist: json || { mbid, name },
+        message: `Successfully added "${name || mbid}" to Headphones`
+    };
+}
+
+async function getHeadphonesQualityProfiles(baseUrl, apiKey) {
+    const url = `${baseUrl.replace(/\/$/, '')}/api?apikey=${encodeURIComponent(apiKey)}&cmd=getQualityProfiles`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Headphones getQualityProfiles failed: ${res.status} ${res.statusText}`);
+    const json = await res.json();
+    return json;
+}
+
+async function getHeadphonesRootFolders(baseUrl, apiKey) {
+    const url = `${baseUrl.replace(/\/$/, '')}/api?apikey=${encodeURIComponent(apiKey)}&cmd=getRootFolders`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Headphones getRootFolders failed: ${res.status} ${res.statusText}`);
+    const json = await res.json();
+    return json;
 }
 
 /**
