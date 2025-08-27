@@ -572,6 +572,45 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
     book.monitored = !!monitored;
     book.addOptions = { searchForNewBook: !!searchForNewBook };
 
+    // Normalize author name for logging / compatibility
+    if (book.author && !book.author.name && book.author.authorName) {
+        book.author.name = book.author.authorName;
+    }
+
+    // Ensure editions array is present; if missing, try to resolve via edition lookup
+    // This avoids Readarr server error: "Value cannot be null. (Parameter 'source')" when mapping editions
+    if (!Array.isArray(book.editions) || book.editions.length === 0) {
+        console.warn('[READARR] Book has no editions; attempting edition lookup');
+        const editionTerms = [];
+        if (book.foreignEditionId) editionTerms.push(`goodreads:${book.foreignEditionId}`);
+        if (book.isbn13) editionTerms.push(`isbn:${book.isbn13}`);
+        if (book.isbn10 || book.isbn) editionTerms.push(`isbn:${book.isbn10 || book.isbn}`);
+        if (book.foreignBookId) editionTerms.push(`goodreads:${book.foreignBookId}`);
+        const aName = book.author?.authorName || book.author?.name;
+        if (book.title && aName) editionTerms.push(`${book.title} ${aName}`);
+        if (book.title) editionTerms.push(book.title);
+        for (const et of editionTerms) {
+            try {
+                const url = `${baseUrl}/api/v1/edition/lookup?apikey=${apiKey}&term=${encodeURIComponent(et)}`;
+                console.log('[READARR] Edition lookup with term:', et);
+                const r = await fetch(url);
+                if (!r.ok) continue;
+                const arr = await r.json();
+                if (Array.isArray(arr) && arr.length > 0) {
+                    book.editions = [arr[0]];
+                    if (book.editions[0]) book.editions[0].monitored = true;
+                    console.log('[READARR] Edition resolved via term:', et, '->', book.editions[0]?.title || book.editions[0]?.foreignEditionId || '[unknown]');
+                    break;
+                }
+            } catch (e) {
+                console.warn('[READARR] Edition lookup error:', e?.message || e);
+            }
+        }
+    }
+    if (!Array.isArray(book.editions)) {
+        book.editions = [];
+    }
+
     console.log('[READARR] Adding book with payload (trimmed):', JSON.stringify({
         title: book.title,
         author: {
