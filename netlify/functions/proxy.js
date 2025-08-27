@@ -493,11 +493,11 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
 
     console.log('[READARR] Using book result:', book?.title || '[no title]', 'by', book?.author?.name || '[unknown author]');
 
-    // Ensure book has author information
+    // Ensure book has author information - handle both provided and extracted cases
     if (!book.author) {
         console.warn('[READARR] Book lacks author; attempting resolution from available data');
         
-        // Try to extract author from authorTitle
+        // Priority 1: Extract from authorTitle if available
         if (book.authorTitle) {
             const authorCandidates = extractAuthorNameCandidates(book, book.authorTitle);
             if (authorCandidates.length > 0) {
@@ -506,7 +506,17 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
             }
         }
         
-        // Fallback to BookInfo.pro if we have book title
+        // Priority 2: Use provided author if available
+        if (!book.author && book.authorTitle) {
+            // Handle "Last, First" format from authorTitle
+            const authorName = book.authorTitle.replace(/\s*\b\w+\b.*$/, '').trim();
+            if (authorName) {
+                book.author = { name: authorName };
+                console.log(`[READARR] Using author from authorTitle: ${book.author.name}`);
+            }
+        }
+        
+        // Priority 3: BookInfo.pro fallback
         if (!book.author && book.title) {
             console.log(`[READARR] Attempting BookInfo.pro author resolution for: ${book.title}`);
             try {
@@ -523,6 +533,8 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         if (!book.author) {
             throw new Error('Unable to resolve author for book: insufficient metadata');
         }
+    } else {
+        console.log(`[READARR] Using provided author: ${book.author.name || book.author}`);
     }
 
     // Additional author resolution via author lookup when author still missing
