@@ -470,15 +470,24 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
     console.log('[READARR] addBookToReadarr called with:', data);
 
     // Step 1: Lookup author
-    console.log(`[READARR] Looking up author: ${term}`);
-    let lookup = await lookupReadarrAuthor(baseUrl, apiKey, { term });
+    // If no explicit term provided, try to extract from book data
+    let searchTerm = term;
+    if (!searchTerm && incomingBook) {
+        // Try to get term from book data
+        searchTerm = incomingBook.authorTitle || 
+                    (incomingBook.author && (incomingBook.author.name || incomingBook.author.authorName)) ||
+                    incomingBook.title;
+    }
+    
+    console.log(`[READARR] Looking up author: ${searchTerm}`);
+    let lookup = await lookupReadarrAuthor(baseUrl, apiKey, { term: searchTerm });
     console.log(`[READARR] Readarr author lookup returned ${lookup?.length || 0} results`);
     
     // Fallback to BookInfo.pro if Readarr lookup fails
     if (!lookup || lookup.length === 0) {
-        console.log(`[READARR] Falling back to BookInfo.pro author lookup: ${term}`);
+        console.log(`[READARR] Falling back to BookInfo.pro author lookup: ${searchTerm}`);
         try {
-            lookup = await lookupBookInfoProAuthor(term);
+            lookup = await lookupBookInfoProAuthor(searchTerm);
             console.log(`[READARR] BookInfo.pro author lookup returned ${lookup?.length || 0} results`);
         } catch (error) {
             console.log(`[READARR] BookInfo.pro author lookup failed: ${error.message}`);
@@ -486,11 +495,13 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
     }
     
     if (!lookup || lookup.length === 0) {
-        throw new Error(`Author lookup failed for term: ${term}`);
+        throw new Error(`Author lookup failed for term: ${searchTerm}`);
     }
     
     const authorData = lookup[0];
 
+    // Use incomingBook as the book data
+    const book = incomingBook;
     console.log('[READARR] Using book result:', book?.title || '[no title]', 'by', book?.author?.name || '[unknown author]');
 
     // Comprehensive author resolution with 5-layer fallback system
@@ -498,7 +509,7 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         console.log('[READARR] Author missing from book data, implementing comprehensive resolution...');
         
         // Layer 1: Extract author candidates from multiple sources
-        const authorCandidates = extractAuthorNameCandidates(book, term);
+        const authorCandidates = extractAuthorNameCandidates(book, searchTerm);
         console.log('[READARR] Author candidates extracted:', authorCandidates);
         
         let resolvedAuthor = null;
