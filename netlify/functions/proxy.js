@@ -63,6 +63,9 @@ exports.handler = async (event, context) => {
             case 'readarr':
                 result = await handleReadarrRequest(action, data);
                 break;
+            case 'lidarr':
+                result = await handleLidarrRequest(action, data);
+                break;
             case 'overseerr':
                 result = await handleOverseerrRequest(action, data);
                 break;
@@ -1289,9 +1292,268 @@ async function getReadarrRootFolders(baseUrl, apiKey) {
 }
 
 /**
- * Handle Overseerr API requests
+/**
+ * Handle Lidarr API requests
  */
-async function handleOverseerrRequest(action, data) {
+async function handleLidarrRequest(action, data) {
+    const baseUrl = process.env.LIDARR_URL;
+    const apiKey = process.env.LIDARR_API_KEY;
+    
+    console.log('[PROXY] Lidarr environment check - URL exists:', !!baseUrl, 'API Key exists:', !!apiKey);
+    
+    if (!baseUrl || !apiKey) {
+        console.error('[PROXY] Missing Lidarr config - URL:', baseUrl, 'API Key:', apiKey ? '[REDACTED]' : 'MISSING');
+        throw new Error('Lidarr configuration missing: ' + (!baseUrl ? 'LIDARR_URL' : '') + (!apiKey ? ' LIDARR_API_KEY' : ''));
+    }
+
+    switch (action) {
+        case 'add_artist':
+            return await addArtistToLidarr(baseUrl, apiKey, data);
+        case 'add_album':
+            return await addAlbumToLidarr(baseUrl, apiKey, data);
+        case 'get_artists':
+            return await getLidarrArtists(baseUrl, apiKey);
+        case 'get_albums':
+            return await getLidarrAlbums(baseUrl, apiKey);
+        case 'get_quality_profiles':
+            return await getLidarrQualityProfiles(baseUrl, apiKey);
+        case 'get_metadata_profiles':
+            return await getLidarrMetadataProfiles(baseUrl, apiKey);
+        case 'get_root_folders':
+            return await getLidarrRootFolders(baseUrl, apiKey);
+        case 'lookup_artist':
+            return await lookupLidarrArtist(baseUrl, apiKey, data);
+        case 'lookup_album':
+            return await lookupLidarrAlbum(baseUrl, apiKey, data);
+        default:
+            throw new Error(`Unknown Lidarr action: ${action}`);
+    }
+}
+
+/**
+ * Add artist to Lidarr using proper workflow
+ */
+async function addArtistToLidarr(baseUrl, apiKey, data) {
+    const { mbId, qualityProfileId, metadataProfileId, rootFolderPath, monitored = true, searchOnAdd = true } = data;
+    
+    if (!mbId || !qualityProfileId || !rootFolderPath) {
+        throw new Error('Missing required fields: mbId, qualityProfileId, rootFolderPath');
+    }
+
+    console.log(`[LIDARR] Looking up artist MBID:${mbId}`);
+    const lookupUrl = `${baseUrl}/api/v1/artist/lookup?apikey=${apiKey}&term=mbid:${mbId}`;
+    
+    const lookupResponse = await fetch(lookupUrl);
+    if (!lookupResponse.ok) {
+        throw new Error(`Artist lookup failed: ${lookupResponse.status} ${lookupResponse.statusText}`);
+    }
+    
+    const lookupResults = await lookupResponse.json();
+    if (!Array.isArray(lookupResults) || lookupResults.length === 0) {
+        throw new Error(`Artist not found in MusicBrainz: ${mbId}`);
+    }
+
+    const artistDetails = lookupResults[0];
+    console.log(`[LIDARR] Found artist: ${artistDetails.artistName}`);
+
+    const addPayload = {
+        artistName: artistDetails.artistName,
+        foreignArtistId: artistDetails.foreignArtistId,
+        qualityProfileId: parseInt(qualityProfileId),
+        metadataProfileId: parseInt(metadataProfileId),
+        rootFolderPath: rootFolderPath,
+        monitored: monitored,
+        addOptions: {
+            monitor: 'all',
+            searchForMissingAlbums: searchOnAdd
+        }
+    };
+
+    console.log('[LIDARR] Adding artist with payload:', JSON.stringify(addPayload, null, 2));
+
+    const addUrl = `${baseUrl}/api/v1/artist?apikey=${apiKey}`;
+    const addResponse = await fetch(addUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(addPayload)
+    });
+
+    if (!addResponse.ok) {
+        const errorText = await addResponse.text();
+        throw new Error(`Failed to add artist: ${addResponse.status} ${addResponse.statusText} - ${errorText}`);
+    }
+
+    const lidarrResponse = await addResponse.json();
+    
+    let addedArtist;
+    let artistName;
+    
+    if (Array.isArray(lidarrResponse)) {
+        addedArtist = lidarrResponse.find(artist => artist.foreignArtistId === artistDetails.foreignArtistId);
+        if (!addedArtist) {
+            throw new Error(`Artist with MBID ${mbId} was not found in Lidarr library after addition attempt`);
+        }
+        artistName = addedArtist.artistName || 'Unknown Artist';
+    } else {
+        addedArtist = lidarrResponse;
+        artistName = addedArtist.artistName || 'Unknown Artist';
+    }
+    
+    return {
+        success: true,
+        artist: addedArtist,
+        message: `Successfully added "${artistName}" to Lidarr${searchOnAdd ? ' and triggered search' : ''}`
+    };
+}
+
+/**
+ * Add album to Lidarr using proper workflow
+ */
+async function addAlbumToLidarr(baseUrl, apiKey, data) {
+    const { mbId, qualityProfileId, metadataProfileId, rootFolderPath, monitored = true, searchOnAdd = true } = data;
+    
+    if (!mbId || !qualityProfileId || !rootFolderPath) {
+        throw new Error('Missing required fields: mbId, qualityProfileId, rootFolderPath');
+    }
+
+    console.log(`[LIDARR] Looking up album MBID:${mbId}`);
+    const lookupUrl = `${baseUrl}/api/v1/album/lookup?apikey=${apiKey}&term=mbid:${mbId}`;
+    
+    const lookupResponse = await fetch(lookupUrl);
+    if (!lookupResponse.ok) {
+        throw new Error(`Album lookup failed: ${lookupResponse.status} ${lookupResponse.statusText}`);
+    }
+    
+    const lookupResults = await lookupResponse.json();
+    if (!Array.isArray(lookupResults) || lookupResults.length === 0) {
+        throw new Error(`Album not found in MusicBrainz: ${mbId}`);
+    }
+
+    const albumDetails = lookupResults[0];
+    console.log(`[LIDARR] Found album: ${albumDetails.title}`);
+
+    const addPayload = {
+        title: albumDetails.title,
+        foreignAlbumId: albumDetails.foreignAlbumId,
+        qualityProfileId: parseInt(qualityProfileId),
+        metadataProfileId: parseInt(metadataProfileId),
+        rootFolderPath: rootFolderPath,
+        monitored: monitored,
+        addOptions: {
+            searchForMissingAlbums: searchOnAdd
+        }
+    };
+
+    console.log('[LIDARR] Adding album with payload:', JSON.stringify(addPayload, null, 2));
+
+    const addUrl = `${baseUrl}/api/v1/album?apikey=${apiKey}`;
+    const addResponse = await fetch(addUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(addPayload)
+    });
+
+    if (!addResponse.ok) {
+        const errorText = await addResponse.text();
+        throw new Error(`Failed to add album: ${addResponse.status} ${addResponse.statusText} - ${errorText}`);
+    }
+
+    const lidarrResponse = await addResponse.json();
+    
+    let addedAlbum;
+    let albumTitle;
+    
+    if (Array.isArray(lidarrResponse)) {
+        addedAlbum = lidarrResponse.find(album => album.foreignAlbumId === albumDetails.foreignAlbumId);
+        if (!addedAlbum) {
+            throw new Error(`Album with MBID ${mbId} was not found in Lidarr library after addition attempt`);
+        }
+        albumTitle = addedAlbum.title || 'Unknown Album';
+    } else {
+        addedAlbum = lidarrResponse;
+        albumTitle = addedAlbum.title || 'Unknown Album';
+    }
+    
+    return {
+        success: true,
+        album: addedAlbum,
+        message: `Successfully added "${albumTitle}" to Lidarr${searchOnAdd ? ' and triggered search' : ''}`
+    };
+}
+
+/**
+ * Get Lidarr artists
+ */
+async function getLidarrArtists(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/artist?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get artists: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Get Lidarr albums
+ */
+async function getLidarrAlbums(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/album?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get albums: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Get Lidarr quality profiles
+ */
+async function getLidarrQualityProfiles(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/qualityprofile?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get quality profiles: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Get Lidarr metadata profiles
+ */
+async function getLidarrMetadataProfiles(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/metadataprofile?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get metadata profiles: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Get Lidarr root folders
+ */
+async function getLidarrRootFolders(baseUrl, apiKey) {
+    const response = await fetch(`${baseUrl}/api/v1/rootfolder?apikey=${apiKey}`);
+    if (!response.ok) throw new Error(`Failed to get root folders: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Lookup artist in Lidarr
+ */
+async function lookupLidarrArtist(baseUrl, apiKey, data) {
+    const { term } = data || {};
+    if (!term) throw new Error('lookup_artist requires "term"');
+    const response = await fetch(`${baseUrl}/api/v1/artist/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
+    if (!response.ok) throw new Error(`Failed to lookup artist: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Lookup album in Lidarr
+ */
+async function lookupLidarrAlbum(baseUrl, apiKey, data) {
+    const { term } = data || {};
+    if (!term) throw new Error('lookup_album requires "term"');
+    const response = await fetch(`${baseUrl}/api/v1/album/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
+    if (!response.ok) throw new Error(`Failed to lookup album: ${response.statusText}`);
+    return await response.json();
+}
+
+/**
+ * Handle Overseerr API requests
     const baseUrl = process.env.OVERSEERR_URL;
     const apiKey = process.env.OVERSEERR_API_KEY;
     
