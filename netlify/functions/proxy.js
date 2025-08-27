@@ -493,44 +493,47 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
 
     console.log('[READARR] Using book result:', book?.title || '[no title]', 'by', book?.author?.name || '[unknown author]');
 
-    // Enhanced author resolution with multiple fallback strategies
+    // Comprehensive author resolution with 5-layer fallback system
     if (!book.author || !book.author.authorName) {
-        console.log('[READARR] Author missing from book data, attempting enhanced resolution...');
+        console.log('[READARR] Author missing from book data, implementing comprehensive resolution...');
         
-        // Extract author candidates using improved parsing
+        // Layer 1: Extract author candidates from multiple sources
         const authorCandidates = extractAuthorNameCandidates(book, term);
         console.log('[READARR] Author candidates extracted:', authorCandidates);
         
         let resolvedAuthor = null;
+        let usedStrategy = null;
         
-        // Strategy 1: Try each candidate with Readarr author lookup
-        for (const cand of authorCandidates) {
-            try {
-                console.log('[READARR] Looking up author in Readarr:', cand);
-                const authorResults = await lookupReadarrAuthor(baseUrl, apiKey, { term: cand });
-                
-                if (authorResults && authorResults.length > 0) {
-                    const best = pickBestAuthorMatch(authorResults, cand);
-                    if (best && (best.authorName || best.name)) {
-                        resolvedAuthor = best;
-                        console.log('[READARR] Author resolved via Readarr:', best.authorName || best.name);
-                        break;
+        // Layer 2: Readarr author lookup with multiple name variations
+        if (authorCandidates.length > 0) {
+            for (const cand of authorCandidates) {
+                try {
+                    console.log('[READARR] Strategy 1: Readarr author lookup for:', cand);
+                    const authorResults = await lookupReadarrAuthor(baseUrl, apiKey, { term: cand });
+                    
+                    if (authorResults && authorResults.length > 0) {
+                        const best = pickBestAuthorMatch(authorResults, cand);
+                        if (best && (best.authorName || best.name)) {
+                            resolvedAuthor = best;
+                            usedStrategy = 'Readarr author lookup';
+                            break;
+                        }
                     }
+                } catch (e) {
+                    console.warn('[READARR] Readarr author lookup failed for:', cand, e?.message || e);
                 }
-            } catch (e) {
-                console.warn('[READARR] Readarr author lookup failed for:', cand, e?.message || e);
             }
         }
         
-        // Strategy 2: BookInfo.pro fallback for author lookup
+        // Layer 3: BookInfo.pro author lookup fallback
         if (!resolvedAuthor && authorCandidates.length > 0) {
-            console.log('[READARR] Trying BookInfo.pro author lookup...');
+            console.log('[READARR] Strategy 2: BookInfo.pro author lookup');
             try {
                 for (const cand of authorCandidates) {
                     const bookInfoAuthors = await lookupBookInfoProAuthor(cand);
                     if (bookInfoAuthors && bookInfoAuthors.length > 0) {
                         resolvedAuthor = bookInfoAuthors[0];
-                        console.log('[READARR] Author resolved via BookInfo.pro:', resolvedAuthor.authorName);
+                        usedStrategy = 'BookInfo.pro';
                         break;
                     }
                 }
@@ -539,26 +542,88 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
             }
         }
         
-        // Strategy 3: Create author if not found (with basic info)
-        if (!resolvedAuthor && authorCandidates.length > 0) {
-            const primaryAuthor = authorCandidates[0];
-            console.log('[READARR] Creating new author entry:', primaryAuthor);
+        // Layer 4: Direct Goodreads author search using book's foreignBookId
+        if (!resolvedAuthor && book.foreignBookId) {
+            console.log('[READARR] Strategy 3: Direct Goodreads author search');
+            try {
+                // Try to get author from book metadata using the book ID
+                const bookDetails = await lookupReadarrBook(baseUrl, apiKey, { 
+                    term: `goodreads:${book.foreignBookId}` 
+                });
+                
+                if (bookDetails && bookDetails.length > 0 && bookDetails[0].author) {
+                    resolvedAuthor = bookDetails[0].author;
+                    usedStrategy = 'Book metadata lookup';
+                }
+            } catch (e) {
+                console.warn('[READARR] Direct book metadata lookup failed:', e?.message || e);
+            }
+        }
+        
+        // Layer 5: Enhanced name parsing from book title patterns
+        if (!resolvedAuthor) {
+            console.log('[READARR] Strategy 4: Enhanced name parsing from book data');
             
-            // Create a basic author object for Readarr
+            // Try to extract author from book title patterns
+            const title = book.title || '';
+            const authorTitle = book.authorTitle || '';
+            
+            // Common patterns: "Title by Author", "Author - Title", etc.
+            let extractedAuthor = null;
+            
+            // Pattern: "by Author Name" in title
+            const byPattern = title.match(/\bby\s+([^(-]+)(?:\s*[-(]|$)/i);
+            if (byPattern && byPattern[1]) {
+                extractedAuthor = byPattern[1].trim();
+            }
+            
+            // Pattern: Author in authorTitle field
+            if (!extractedAuthor && authorTitle) {
+                // Clean up authorTitle which might contain book title
+                extractedAuthor = cleanupAuthorName(authorTitle, title);
+            }
+            
+            // Pattern: Parse from series title if available
+            if (!extractedAuthor && book.seriesTitle) {
+                const seriesMatch = book.seriesTitle.match(/^(.+?)\s*\#/);
+                if (seriesMatch && seriesMatch[1]) {
+                    extractedAuthor = cleanupAuthorName(seriesMatch[1], title);
+                }
+            }
+            
+            if (extractedAuthor && extractedAuthor.length >= 2) {
+                resolvedAuthor = {
+                    authorName: extractedAuthor,
+                    foreignAuthorId: extractedAuthor.toLowerCase().replace(/\s+/g, '-'),
+                    overview: `Author of ${title}`,
+                    images: [],
+                    genres: book.genres || [],
+                    ratings: { value: 0, votes: 0 }
+                };
+                usedStrategy = 'Enhanced name parsing';
+            }
+        }
+        
+        // Final fallback: Use a generic author if we have book data
+        if (!resolvedAuthor && (book.title || book.foreignBookId)) {
+            console.log('[READARR] Strategy 5: Generic fallback author');
+            const fallbackName = book.authorTitle || 'Unknown Author';
             resolvedAuthor = {
-                authorName: primaryAuthor,
-                foreignAuthorId: primaryAuthor.toLowerCase().replace(/\s+/g, '-'),
-                overview: `Author of ${book.title || 'unknown book'}`,
+                authorName: fallbackName,
+                foreignAuthorId: fallbackName.toLowerCase().replace(/\s+/g, '-') || 'unknown',
+                overview: `Author information for ${book.title || 'book'}`,
                 images: [],
                 genres: book.genres || [],
                 ratings: { value: 0, votes: 0 }
             };
+            usedStrategy = 'Generic fallback';
         }
         
         if (resolvedAuthor) {
             book.author = resolvedAuthor;
+            console.log(`[READARR] Author resolved via ${usedStrategy}:`, resolvedAuthor.authorName);
         } else {
-            throw new Error('Unable to resolve author for book addition. Please provide author information.');
+            throw new Error('Unable to resolve author for book addition. All resolution strategies failed.');
         }
     } else {
         console.log(`[READARR] Using provided author: ${book.author.name || book.author}`);
