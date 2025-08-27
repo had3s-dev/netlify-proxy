@@ -493,33 +493,35 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
 
     console.log('[READARR] Using book result:', book?.title || '[no title]', 'by', book?.author?.name || '[unknown author]');
 
-    // Fallback: if provided/selected book lacks author, try to resolve via identifiers or search
+    // Ensure book has author information
     if (!book.author) {
-        console.warn('[READARR] Book lacks author; attempting secondary lookup using identifiers');
-        const tryTerms = [];
-        if (book.foreignEditionId) tryTerms.push(`goodreads:${book.foreignEditionId}`);
-        if (book.foreignBookId) tryTerms.push(`goodreads:${book.foreignBookId}`);
-        if (book.isbn13) tryTerms.push(`isbn:${book.isbn13}`);
-        if (book.isbn10 || book.isbn) tryTerms.push(`isbn:${book.isbn10 || book.isbn}`);
-        if (term) tryTerms.push(term);
-        if (book.title && book.authorTitle) tryTerms.push(`${book.title} ${book.authorTitle}`);
-        if (book.title) tryTerms.push(book.title);
-
-        for (const t of tryTerms) {
+        console.warn('[READARR] Book lacks author; attempting resolution from available data');
+        
+        // Try to extract author from authorTitle
+        if (book.authorTitle) {
+            const authorCandidates = extractAuthorNameCandidates(book, book.authorTitle);
+            if (authorCandidates.length > 0) {
+                book.author = { name: authorCandidates[0] };
+                console.log(`[READARR] Resolved author from authorTitle: ${book.author.name}`);
+            }
+        }
+        
+        // Fallback to BookInfo.pro if we have book title
+        if (!book.author && book.title) {
+            console.log(`[READARR] Attempting BookInfo.pro author resolution for: ${book.title}`);
             try {
-                const url = `${baseUrl}/api/v1/book/lookup?apikey=${apiKey}&term=${encodeURIComponent(t)}`;
-                console.log('[READARR] Fallback lookup with term:', t);
-                const resp = await fetch(url);
-                if (!resp.ok) continue;
-                const results = await resp.json();
-                if (Array.isArray(results) && results.length > 0) {
-                    book = results[0];
-                    console.log('[READARR] Fallback lookup succeeded with term:', t, '->', book?.title, 'by', book?.author?.name);
-                    if (book?.author) break;
+                const bookInfo = await lookupBookInfoProBook(book.title);
+                if (bookInfo && bookInfo.length > 0 && bookInfo[0].author) {
+                    book.author = bookInfo[0].author;
+                    console.log(`[READARR] BookInfo.pro resolved author: ${book.author.name}`);
                 }
             } catch (e) {
-                console.warn('[READARR] Fallback lookup error for term', t, e?.message || e);
+                console.warn(`[READARR] BookInfo.pro author resolution failed: ${e.message}`);
             }
+        }
+        
+        if (!book.author) {
+            throw new Error('Unable to resolve author for book: insufficient metadata');
         }
     }
 
