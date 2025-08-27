@@ -428,6 +428,8 @@ async function handleReadarrRequest(action, data) {
             return await lookupReadarrBook(baseUrl, apiKey, data);
         case 'lookup_author':
             return await lookupReadarrAuthor(baseUrl, apiKey, data);
+        case 'lookup_edition':
+            return await lookupReadarrEdition(baseUrl, apiKey, data);
         case 'get_books':
             return await getReadarrBooks(baseUrl, apiKey);
         case 'get_authors':
@@ -456,7 +458,9 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         monitored = true,
         searchForNewBook = true,
         authorMonitor = 'all',
-        authorSearchForMissingBooks = false
+        authorSearchForMissingBooks = false,
+        // Optional: allow caller to provide a specific edition foreign ID directly
+        foreignEditionId: incomingForeignEditionId
     } = data || {};
 
     console.log('[READARR] addBookToReadarr called with:', data);
@@ -636,17 +640,72 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         book.editions = [];
     }
 
+    // If editions exist but none have a foreignEditionId/foreignId, try an extra edition lookup pass
+    let hasForeignEditionIdentifier = (book.editions || []).some(e => e && (e.foreignEditionId || e.foreignId || e.foreign_id));
+    if (!hasForeignEditionIdentifier) {
+        const extraTerms = [];
+        if (book.foreignBookId) extraTerms.push(`goodreads:${book.foreignBookId}`);
+        if (book.isbn13) extraTerms.push(`isbn:${book.isbn13}`);
+        if (book.isbn10 || book.isbn) extraTerms.push(`isbn:${book.isbn10 || book.isbn}`);
+        const aName2 = book.author?.authorName || book.author?.name;
+        if (book.title && aName2) extraTerms.push(`${book.title} ${aName2}`);
+        if (book.title) extraTerms.push(book.title);
+        for (const et2 of extraTerms) {
+            try {
+                const url2 = `${baseUrl}/api/v1/edition/lookup?apikey=${apiKey}&term=${encodeURIComponent(et2)}`;
+                console.log('[READARR] Extra edition lookup due to missing foreignEditionId. Term:', et2);
+                const r2 = await fetch(url2);
+                if (!r2.ok) continue;
+                const arr2 = await r2.json();
+                if (Array.isArray(arr2) && arr2.length > 0) {
+                    book.editions = [arr2[0]];
+                    if (book.editions[0]) book.editions[0].monitored = true;
+                    hasForeignEditionIdentifier = true;
+                    console.log('[READARR] Extra edition lookup resolved:', book.editions[0]?.title || book.editions[0]?.foreignEditionId || '[unknown]');
+                    break;
+                }
+            } catch (e) {
+                console.warn('[READARR] Extra edition lookup error:', e?.message || e);
+            }
+        }
+    }
+
+    // Debug: summarize first few edition objects to inspect keys/ids
+    try {
+        const summary = (book.editions || []).slice(0, 3).map(e => ({
+            title: e?.title,
+            id: e?.id,
+            foreignEditionId: e?.foreignEditionId,
+            foreignId: e?.foreignId,
+            isbn13: e?.isbn13,
+            asin: e?.asin
+        }));
+        console.log('[READARR] Edition candidates summary:', summary);
+    } catch {}
+
     // Transform editions to AddBookEdition model and require a foreignEditionId
-    const editionsPayload = (book.editions || [])
-        .map(e => ({
-            title: e.title || '',
-            titleSlug: e.titleSlug || '',
-            images: Array.isArray(e.images) ? e.images : [],
-            foreignEditionId: e.foreignEditionId || e.foreignId || e.foreign_id || '',
+    let editionsPayload = [];
+    if (incomingForeignEditionId) {
+        editionsPayload = [{
+            title: book.title || '',
+            titleSlug: book.titleSlug || '',
+            images: Array.isArray(book.images) ? book.images : [],
+            foreignEditionId: String(incomingForeignEditionId),
             monitored: true,
             manualAdd: true
-        }))
-        .filter(e => !!e.foreignEditionId);
+        }];
+    } else {
+        editionsPayload = (book.editions || [])
+            .map(e => ({
+                title: e.title || '',
+                titleSlug: e.titleSlug || '',
+                images: Array.isArray(e.images) ? e.images : [],
+                foreignEditionId: e.foreignEditionId || e.foreignId || e.foreign_id || '',
+                monitored: true,
+                manualAdd: true
+            }))
+            .filter(e => !!e.foreignEditionId);
+    }
     if (editionsPayload.length === 0) {
         throw new Error('No valid editions found with a foreignEditionId (Goodreads edition ID) for Readarr add');
     }
@@ -829,6 +888,14 @@ async function lookupReadarrAuthor(baseUrl, apiKey, data) {
     if (!term) throw new Error('lookup_author requires "term"');
     const response = await fetch(`${baseUrl}/api/v1/author/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
     if (!response.ok) throw new Error(`Failed to lookup author: ${response.statusText}`);
+    return await response.json();
+}
+
+async function lookupReadarrEdition(baseUrl, apiKey, data) {
+    const { term } = data || {};
+    if (!term) throw new Error('lookup_edition requires "term"');
+    const response = await fetch(`${baseUrl}/api/v1/edition/lookup?apikey=${apiKey}&term=${encodeURIComponent(term)}`);
+    if (!response.ok) throw new Error(`Failed to lookup edition: ${response.statusText}`);
     return await response.json();
 }
 
