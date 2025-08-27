@@ -611,13 +611,29 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
     if (!Array.isArray(book.editions) || book.editions.length === 0) {
         console.warn('[READARR] Book has no editions; attempting edition lookup');
         const editionTerms = [];
+        
+        // Build comprehensive search terms
         if (book.foreignEditionId) editionTerms.push(`goodreads:${book.foreignEditionId}`);
+        if (book.foreignBookId) editionTerms.push(`goodreads:${book.foreignBookId}`);
         if (book.isbn13) editionTerms.push(`isbn:${book.isbn13}`);
         if (book.isbn10 || book.isbn) editionTerms.push(`isbn:${book.isbn10 || book.isbn}`);
-        if (book.foreignBookId) editionTerms.push(`goodreads:${book.foreignBookId}`);
+        if (book.asin) editionTerms.push(`asin:${book.asin}`);
+        
+        // Author + title combinations
         const aName = book.author?.authorName || book.author?.name;
-        if (book.title && aName) editionTerms.push(`${book.title} ${aName}`);
+        if (book.title && aName) {
+            editionTerms.push(`${book.title} ${aName}`);
+            editionTerms.push(`${aName} ${book.title}`);
+        }
+        
+        // Fallback to basic title
         if (book.title) editionTerms.push(book.title);
+        
+        // Use original search term as last resort
+        if (term && !editionTerms.includes(term)) editionTerms.push(term);
+        
+        let foundEdition = null;
+        
         for (const et of editionTerms) {
             try {
                 const url = `${baseUrl}/api/v1/edition/lookup?apikey=${apiKey}&term=${encodeURIComponent(et)}`;
@@ -626,14 +642,33 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
                 if (!r.ok) continue;
                 const arr = await r.json();
                 if (Array.isArray(arr) && arr.length > 0) {
-                    book.editions = [arr[0]];
+                    // Find the best match - prioritize exact title matches
+                    const bestEdition = arr.find(e => 
+                        e.title && book.title && e.title.toLowerCase() === book.title.toLowerCase()
+                    ) || arr[0];
+                    
+                    book.editions = [bestEdition];
                     if (book.editions[0]) book.editions[0].monitored = true;
-                    console.log('[READARR] Edition resolved via term:', et, '->', book.editions[0]?.title || book.editions[0]?.foreignEditionId || '[unknown]');
+                    foundEdition = bestEdition;
+                    console.log('[READARR] Edition resolved via term:', et, '->', bestEdition?.title || bestEdition?.foreignEditionId || '[unknown]');
                     break;
                 }
             } catch (e) {
-                console.warn('[READARR] Edition lookup error:', e?.message || e);
+                console.warn('[READARR] Edition lookup error for term', et, ':', e?.message || e);
             }
+        }
+        
+        // If still no editions found, create a synthetic edition from book data
+        if (!foundEdition && book.title) {
+            console.warn('[READARR] Creating synthetic edition from book data');
+            book.editions = [{
+                title: book.title || '',
+                titleSlug: book.titleSlug || '',
+                images: Array.isArray(book.images) ? book.images : [],
+                foreignEditionId: book.foreignEditionId || book.foreignBookId || `synthetic-${Date.now()}`,
+                monitored: true,
+                manualAdd: true
+            }];
         }
     }
     if (!Array.isArray(book.editions)) {
@@ -641,32 +676,67 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
     }
 
     // If editions exist but none have a foreignEditionId/foreignId, try an extra edition lookup pass
-    let hasForeignEditionIdentifier = (book.editions || []).some(e => e && (e.foreignEditionId || e.foreignId || e.foreign_id));
+    let hasForeignEditionIdentifier = (book.editions || []).some(e => e && (e.foreignEditionId || e.foreignId || e.foreign_id || e.goodreadsId || e.editionId));
+    
     if (!hasForeignEditionIdentifier) {
+        console.warn('[READARR] No foreignEditionId found in existing editions, attempting enhanced lookup');
         const extraTerms = [];
+        
+        // Use all available identifiers
         if (book.foreignBookId) extraTerms.push(`goodreads:${book.foreignBookId}`);
+        if (book.foreignEditionId) extraTerms.push(`goodreads:${book.foreignEditionId}`);
         if (book.isbn13) extraTerms.push(`isbn:${book.isbn13}`);
         if (book.isbn10 || book.isbn) extraTerms.push(`isbn:${book.isbn10 || book.isbn}`);
+        if (book.asin) extraTerms.push(`asin:${book.asin}`);
+        
         const aName2 = book.author?.authorName || book.author?.name;
-        if (book.title && aName2) extraTerms.push(`${book.title} ${aName2}`);
+        if (book.title && aName2) {
+            extraTerms.push(`${book.title} ${aName2}`);
+            extraTerms.push(`${aName2} ${book.title}`);
+        }
         if (book.title) extraTerms.push(book.title);
+        if (term) extraTerms.push(term);
+        
+        let foundEdition = false;
+        
         for (const et2 of extraTerms) {
             try {
                 const url2 = `${baseUrl}/api/v1/edition/lookup?apikey=${apiKey}&term=${encodeURIComponent(et2)}`;
-                console.log('[READARR] Extra edition lookup due to missing foreignEditionId. Term:', et2);
+                console.log('[READARR] Enhanced edition lookup. Term:', et2);
                 const r2 = await fetch(url2);
                 if (!r2.ok) continue;
                 const arr2 = await r2.json();
                 if (Array.isArray(arr2) && arr2.length > 0) {
-                    book.editions = [arr2[0]];
+                    // Find edition with proper foreign ID
+                    const validEdition = arr2.find(e => 
+                        e.foreignEditionId || e.foreignId || e.goodreadsId || e.editionId
+                    ) || arr2[0];
+                    
+                    book.editions = [validEdition];
                     if (book.editions[0]) book.editions[0].monitored = true;
-                    hasForeignEditionIdentifier = true;
-                    console.log('[READARR] Extra edition lookup resolved:', book.editions[0]?.title || book.editions[0]?.foreignEditionId || '[unknown]');
+                    hasForeignEditionIdentifier = !!(validEdition.foreignEditionId || validEdition.foreignId || validEdition.goodreadsId);
+                    foundEdition = true;
+                    console.log('[READARR] Enhanced edition lookup resolved:', validEdition?.title || validEdition?.foreignEditionId || '[unknown]');
                     break;
                 }
             } catch (e) {
-                console.warn('[READARR] Extra edition lookup error:', e?.message || e);
+                console.warn('[READARR] Enhanced edition lookup error:', e?.message || e);
             }
+        }
+        
+        // If still no valid edition, use book data to create minimal edition
+        if (!foundEdition) {
+            console.warn('[READARR] Using fallback edition creation from book data');
+            const fallbackId = book.foreignEditionId || book.foreignBookId || book.isbn13 || book.isbn10 || `fallback-${Date.now()}`;
+            book.editions = [{
+                title: book.title || '',
+                titleSlug: book.titleSlug || '',
+                images: Array.isArray(book.images) ? book.images : [],
+                foreignEditionId: String(fallbackId),
+                monitored: true,
+                manualAdd: true
+            }];
+            hasForeignEditionIdentifier = true;
         }
     }
 
@@ -683,8 +753,10 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
         console.log('[READARR] Edition candidates summary:', summary);
     } catch {}
 
-    // Transform editions to AddBookEdition model and require a foreignEditionId
+    // Transform editions to AddBookEdition model
     let editionsPayload = [];
+    
+    // If specific foreignEditionId provided, use it
     if (incomingForeignEditionId) {
         editionsPayload = [{
             title: book.title || '',
@@ -695,19 +767,75 @@ async function addBookToReadarr(baseUrl, apiKey, data) {
             manualAdd: true
         }];
     } else {
+        // Build editions from available data
         editionsPayload = (book.editions || [])
             .map(e => ({
-                title: e.title || '',
-                titleSlug: e.titleSlug || '',
-                images: Array.isArray(e.images) ? e.images : [],
-                foreignEditionId: e.foreignEditionId || e.foreignId || e.foreign_id || '',
+                title: e.title || book.title || '',
+                titleSlug: e.titleSlug || book.titleSlug || '',
+                images: Array.isArray(e.images) ? e.images : Array.isArray(book.images) ? book.images : [],
+                foreignEditionId: e.foreignEditionId || e.goodreadsEditionId || e.goodreadsId || e.foreignId || e.foreign_id || e.editionId || e.id || '',
                 monitored: true,
                 manualAdd: true
             }))
-            .filter(e => !!e.foreignEditionId);
+            .filter(e => !!e.foreignEditionId && e.foreignEditionId !== '');
     }
+    
+    // Enhanced fallback strategies
     if (editionsPayload.length === 0) {
-        throw new Error('No valid editions found with a foreignEditionId (Goodreads edition ID) for Readarr add');
+        // Try using book identifiers directly
+        const possibleIds = [
+            book.foreignEditionId,
+            book.foreignBookId,
+            book.foreignId,
+            book.isbn13,
+            book.isbn10,
+            book.isbn,
+            book.goodreadsId,
+            book.editionId
+        ].filter(id => id && String(id).trim() !== '');
+        
+        if (possibleIds.length > 0) {
+            console.warn('[READARR] Using book identifiers as edition fallback');
+            editionsPayload = [{
+                title: book.title || '',
+                titleSlug: book.titleSlug || '',
+                images: Array.isArray(book.images) ? book.images : [],
+                foreignEditionId: String(possibleIds[0]),
+                monitored: true,
+                manualAdd: true
+            }];
+        }
+    }
+    
+    if (editionsPayload.length === 0) {
+        // Final fallback - create synthetic edition ID
+        const syntheticId = book.foreignBookId || book.foreignEditionId || 
+                          book.isbn13 || book.isbn10 || 
+                          `syn-${book.title?.toLowerCase().replace(/[^a-z0-9]/g, '')}-${Date.now()}`;
+        
+        console.warn('[READARR] Creating synthetic edition ID:', syntheticId);
+        editionsPayload = [{
+            title: book.title || '',
+            titleSlug: book.titleSlug || '',
+            images: Array.isArray(book.images) ? book.images : [],
+            foreignEditionId: String(syntheticId),
+            monitored: true,
+            manualAdd: true
+        }];
+    }
+    
+    // Ensure we have at least one edition
+    if (editionsPayload.length === 0) {
+        const diag = {
+            term: term || null,
+            foreignBookId: book?.foreignBookId || null,
+            foreignEditionId: book?.foreignEditionId || null,
+            isbn13: book?.isbn13 || null,
+            isbn10: book?.isbn10 || book?.isbn || null,
+            title: book?.title || null,
+            author: book?.author?.name || null
+        };
+        throw new Error('Unable to create valid edition for Readarr add. Diagnostics: ' + JSON.stringify(diag));
     }
 
     const addPayload = {
