@@ -488,6 +488,77 @@ async function handleHeadphonesRequest(action, data) {
 }
 
 // Headphones helpers
+// Normalize and enrich Headphones search results for consistent frontend display
+function deriveYear(dateLike) {
+    if (!dateLike) return undefined;
+    try {
+        const s = String(dateLike);
+        const y = s.match(/\d{4}/);
+        return y ? parseInt(y[0], 10) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function buildCoverArtUrlFromMbId(mbid) {
+    if (!mbid) return { coverUrl: undefined, fallbacks: [] };
+    // Prefer release-group cover, fallback to release cover
+    const rg = `https://coverartarchive.org/release-group/${encodeURIComponent(mbid)}/front-500`;
+    const rgFull = `https://coverartarchive.org/release-group/${encodeURIComponent(mbid)}/front`;
+    const rel = `https://coverartarchive.org/release/${encodeURIComponent(mbid)}/front-500`;
+    const relFull = `https://coverartarchive.org/release/${encodeURIComponent(mbid)}/front`;
+    return { coverUrl: rg, fallbacks: [rgFull, rel, relFull] };
+}
+
+function normalizeHeadphonesArtist(item) {
+    const name = item?.artistName || item?.name || item?.title || 'Unknown Artist';
+    const mbid = item?.mbid || item?.id || item?.artistId || item?.musicBrainzId || item?.foreignArtistId || undefined;
+    const disambiguation = item?.disambiguation || item?.disambig || item?.overview || undefined;
+    const genres = Array.isArray(item?.genres) ? item.genres : (item?.tags || []);
+    const albumCount = item?.albumCount ?? (Array.isArray(item?.albums) ? item.albums.length : item?.album_count);
+    return {
+        type: 'artist',
+        name,
+        artistName: name,
+        mbid,
+        foreignArtistId: mbid,
+        disambiguation,
+        genres,
+        albumCount: typeof albumCount === 'number' ? albumCount : undefined,
+        origin: 'headphones',
+        raw: item
+    };
+}
+
+function normalizeHeadphonesAlbum(item) {
+    const title = item?.albumTitle || item?.title || item?.name || 'Unknown Album';
+    const artist = item?.artist || item?.artistName || item?.artist_name || 'Unknown Artist';
+    const mbid = item?.mbid || item?.id || item?.albumId || item?.foreignAlbumId || item?.albumid || item?.musicBrainzId || undefined;
+    const artistMbid = item?.artistId || item?.artistMbId || item?.artist_mbid || undefined;
+    const releaseDate = item?.releaseDate || item?.released || item?.firstReleaseDate || item?.release_date || undefined;
+    const year = deriveYear(item?.year || releaseDate);
+    const trackCount = item?.trackCount || (Array.isArray(item?.tracks) ? item.tracks.length : (item?.num_tracks || item?.track_count));
+    const albumType = item?.type || item?.albumType || item?.primaryType || undefined;
+    const caa = buildCoverArtUrlFromMbId(mbid);
+    return {
+        type: 'album',
+        title,
+        albumTitle: title, // synonym for frontend compatibility
+        artist,
+        artistName: artist, // synonym
+        mbid,
+        foreignAlbumId: mbid,
+        artistMbid,
+        releaseDate,
+        year,
+        trackCount: typeof trackCount === 'number' ? trackCount : undefined,
+        albumType,
+        coverUrl: caa.coverUrl,
+        coverUrlFallbacks: caa.fallbacks,
+        origin: 'headphones',
+        raw: item
+    };
+}
 async function searchHeadphonesArtist(baseUrl, apiKey, data) {
     const term = data?.term || data?.name || data?.query;
     if (!term) throw new Error('Search term is required');
@@ -499,7 +570,8 @@ async function searchHeadphonesArtist(baseUrl, apiKey, data) {
     const json = await res.json();
     // Some Headphones builds return object with 'artists' or direct array; normalize to array
     const list = Array.isArray(json) ? json : (json?.artists || json?.results || []);
-    return list;
+    const normalized = list.map(normalizeHeadphonesArtist);
+    return normalized;
 }
 
 async function addHeadphonesArtist(baseUrl, apiKey, data) {
@@ -537,7 +609,8 @@ async function searchHeadphonesAlbum(baseUrl, apiKey, data) {
     const json = await res.json();
     // Some Headphones builds return object with 'albums' or direct array; normalize to array
     const list = Array.isArray(json) ? json : (json?.albums || json?.results || []);
-    return list;
+    const normalized = list.map(normalizeHeadphonesAlbum);
+    return normalized;
 }
 
 async function addHeadphonesAlbum(baseUrl, apiKey, data) {
