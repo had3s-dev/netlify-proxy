@@ -471,6 +471,10 @@ async function handleHeadphonesRequest(action, data) {
             return await searchHeadphonesArtist(baseUrl, apiKey, data);
         case 'add_artist':
             return await addHeadphonesArtist(baseUrl, apiKey, data);
+        case 'search_album':
+            return await searchHeadphonesAlbum(baseUrl, apiKey, data);
+        case 'add_album':
+            return await addHeadphonesAlbum(baseUrl, apiKey, data);
         case 'get_quality_profiles':
             return await getHeadphonesQualityProfiles(baseUrl, apiKey);
         case 'get_root_folders':
@@ -515,6 +519,44 @@ async function addHeadphonesArtist(baseUrl, apiKey, data) {
         success: true,
         artist: json || { mbid, name },
         message: `Successfully added "${name || mbid}" to Headphones`
+    };
+}
+
+async function searchHeadphonesAlbum(baseUrl, apiKey, data) {
+    const term = data?.term || data?.album || data?.query;
+    const artist = data?.artist || data?.artistName;
+    if (!term && !artist) throw new Error('Album search requires a term or artist');
+
+    // Headphones commonly supports findAlbum by name; optionally include artist name in term for better results
+    const search = term ? term : '';
+    const combined = artist && term ? `${artist} ${term}` : (artist || search);
+    const url = `${baseUrl.replace(/\/$/, '')}/api?apikey=${encodeURIComponent(apiKey)}&cmd=findAlbum&name=${encodeURIComponent(combined)}`;
+    console.log('[HEADPHONES] Searching albums:', combined);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Headphones findAlbum failed: ${res.status} ${res.statusText}`);
+    const json = await res.json();
+    // Some Headphones builds return object with 'albums' or direct array; normalize to array
+    const list = Array.isArray(json) ? json : (json?.albums || json?.results || []);
+    return list;
+}
+
+async function addHeadphonesAlbum(baseUrl, apiKey, data) {
+    const mbid = data?.mbid || data?.mbId || data?.id || data?.foreignAlbumId || data?.albumId;
+    const title = data?.albumTitle || data?.title || data?.name;
+    if (!mbid) throw new Error('MBID is required to add album');
+
+    const url = `${baseUrl.replace(/\/$/, '')}/api?apikey=${encodeURIComponent(apiKey)}&cmd=addAlbum&id=${encodeURIComponent(mbid)}`;
+    console.log('[HEADPHONES] Adding album MBID:', mbid, 'Title:', title || '[unknown]');
+    const res = await fetch(url);
+    if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Headphones addAlbum failed: ${res.status} ${res.statusText} - ${txt}`);
+    }
+    const json = await res.json().catch(() => ({}));
+    return {
+        success: true,
+        album: json || { mbid, title },
+        message: `Successfully added album "${title || mbid}" to Headphones`
     };
 }
 
